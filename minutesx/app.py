@@ -352,7 +352,8 @@ class MinutesXApp(tk.Tk):
         self.refresh_button.configure(state="normal")
         self.import_button.configure(state="normal")
         self._log("Stopping. Remaining audio will still be transcribed.")
-        self.status_var.set("Stopping. Waiting for remaining transcription, then final summary.")
+        self.status_var.set("停止中。残りの文字起こしが終わったら要約します。")
+        self._add_event("meta", "\n[要約待機中] 残りの文字起こしが終わったら要約します。\n")
         self.final_summary_requested = True
         self.after(1000, self._maybe_start_final_summary)
         self._set_level("Mic", 0)
@@ -468,7 +469,8 @@ class MinutesXApp(tk.Tk):
         lines = list(self.transcript_lines)
         self.final_summary_running = True
         self.summary_button.configure(state="disabled")
-        self._set_status(f"Creating final summary from {len(lines)} transcript lines")
+        self._add_event("meta", f"\n[要約中] {len(lines)}行の文字起こしを要約しています...\n")
+        self._set_status(f"要約中: {len(lines)}行の文字起こしを要約しています")
         ollama_model = self.ollama_model_var.get() or DEFAULT_OLLAMA_MODEL
         threading.Thread(
             target=self._run_final_summary,
@@ -489,12 +491,12 @@ class MinutesXApp(tk.Tk):
 
     def _run_final_summary(self, lines: list[TranscriptLine], ollama_model: str) -> None:
         try:
-            self._set_status(f"Using Ollama model: {ollama_model}")
+            self._set_status(f"要約中: Ollama model {ollama_model} を使用しています")
             summary = summarize_lines(lines, model=ollama_model)
             self.summary_queue.put(summary)
-            self._set_status("Final summary created")
+            self._set_status("要約が完了しました")
         except Exception as exc:
-            self._set_status(f"Final summary failed: {exc}")
+            self._set_status(f"要約に失敗しました: {exc}")
         finally:
             self.after(0, self._finish_final_summary)
 
