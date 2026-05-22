@@ -1,0 +1,18 @@
+[project]
+name = "minutesx"
+version = "0.1.0"
+description = "Local meeting transcription app for microphone and system audio."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "faster-whisper>=1.1.0",
+    "numpy>=1.26",
+    "soundcard>=0.4.3",
+]
+
+[project.scripts]
+minutesx = "minutesx.app:main"
+
+[tool.uv]
+package = true
+
