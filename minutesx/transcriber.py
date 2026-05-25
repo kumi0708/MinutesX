@@ -38,6 +38,7 @@ class LocalWhisperTranscriber(threading.Thread):
         stop_event: threading.Event,
         on_status: Callable[[str], None],
         model_size: str = "small",
+        device: str = "cpu",
         language: str = "ja",
     ) -> None:
         super().__init__(daemon=True)
@@ -46,9 +47,10 @@ class LocalWhisperTranscriber(threading.Thread):
         self.stop_event = stop_event
         self.on_status = on_status
         self.model_size = model_size
+        self.device = "cuda" if device == "cuda" else "cpu"
         self.language = language
         self._model = None
-        self._model_device = "auto"
+        self._model_device = self.device
 
     def _load_model(self, *, force_cpu: bool = False):
         if force_cpu:
@@ -67,9 +69,10 @@ class LocalWhisperTranscriber(threading.Thread):
             self.on_status(f"Loading local Whisper model on CPU: {self.model_size}")
             self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
         else:
-            self.on_status(f"Loading local Whisper model: {self.model_size}")
-            self._model = WhisperModel(self.model_size, device="auto", compute_type="auto")
-        self.on_status(f"Whisper model loaded ({self._model_device})")
+            self.on_status(f"Loading local Whisper model on GPU: {self.model_size}")
+            self._model = WhisperModel(self.model_size, device="cuda", compute_type="auto")
+        loaded_device = "GPU" if self._model_device == "cuda" else "CPU"
+        self.on_status(f"Whisper model loaded ({loaded_device})")
         return self._model
 
     def run(self) -> None:
@@ -136,6 +139,7 @@ def transcribe_audio_file(
     path: Path,
     *,
     model_size: str,
+    device: str = "cpu",
     language: str = "ja",
     source: str = "File",
     on_status: Callable[[str], None] | None = None,
@@ -163,8 +167,10 @@ def transcribe_audio_file(
         )
         return list(segments)
 
+    selected_device = "cuda" if device == "cuda" else "cpu"
+    selected_compute_type = "auto" if selected_device == "cuda" else "int8"
     try:
-        segments = run_model(device="auto", compute_type="auto")
+        segments = run_model(device=selected_device, compute_type=selected_compute_type)
     except RuntimeError as exc:
         message = str(exc).lower()
         if "cublas" not in message and "cuda" not in message:
