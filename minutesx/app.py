@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from faster_whisper import available_models
+
 from .audio import (
     AudioChunk,
     default_loopback_id,
@@ -29,7 +31,8 @@ from .writer import append_line, append_summary, create_transcript, new_transcri
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-MODEL_OPTIONS = ("base", "small", "medium")
+MODEL_OPTIONS = tuple(available_models())
+DEVICE_OPTIONS = ("CPU", "GPU")
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,7 @@ class MinutesXApp(tk.Tk):
         self.title("MinutesX")
         self.geometry("920x640")
         self.minsize(760, 480)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(4, weight=1)
 
         self.devices: list[str] = []
         self.stop_event: threading.Event | None = None
@@ -62,6 +65,9 @@ class MinutesXApp(tk.Tk):
         self.mic_var = tk.StringVar()
         self.loopback_var = tk.StringVar()
         self.model_var = tk.StringVar(value=str(self.settings["whisper_model"]))
+        self.device_var = tk.StringVar(
+            value="GPU" if self.settings.get("whisper_device") == "cuda" else "CPU"
+        )
         self.ollama_model_var = tk.StringVar(
             value=str(self.settings.get("ollama_model") or DEFAULT_OLLAMA_MODEL)
         )
@@ -71,6 +77,7 @@ class MinutesXApp(tk.Tk):
             value=bool(self.settings["show_transcript"])
         )
         self.show_summary_var = tk.BooleanVar(value=bool(self.settings["show_summary"]))
+        self.auto_summary_var = tk.BooleanVar(value=bool(self.settings["auto_summary"]))
         self.mute_mic_var = tk.BooleanVar(value=bool(self.settings["mute_mic"]))
         self.mute_pc_var = tk.BooleanVar(value=bool(self.settings["mute_pc"]))
         self.mic_level_var = tk.DoubleVar(value=0)
@@ -86,67 +93,87 @@ class MinutesXApp(tk.Tk):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        toolbar = ttk.Frame(self, padding=12)
-        toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.columnconfigure(1, weight=1)
-        toolbar.columnconfigure(4, weight=1)
+        audio_sources = ttk.Frame(self, padding=(12, 12, 12, 6))
+        audio_sources.grid(row=0, column=0, sticky="ew")
+        audio_sources.columnconfigure(1, weight=1)
+        audio_sources.columnconfigure(4, weight=1)
 
-        ttk.Label(toolbar, text="Mic").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.mic_combo = ttk.Combobox(toolbar, textvariable=self.mic_var, state="readonly")
+        ttk.Label(audio_sources, text="Microphone").grid(
+            row=0, column=0, sticky="w", padx=(0, 6)
+        )
+        self.mic_combo = ttk.Combobox(
+            audio_sources, textvariable=self.mic_var, state="readonly"
+        )
         self.mic_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        self.mic_combo.bind("<<ComboboxSelected>>", self._on_audio_device_changed)
         ttk.Checkbutton(
-            toolbar,
+            audio_sources,
             text="Mute",
             variable=self.mute_mic_var,
             command=self._on_audio_option_changed,
         ).grid(row=0, column=2, sticky="w", padx=(0, 12))
 
-        ttk.Label(toolbar, text="PC audio").grid(row=0, column=3, sticky="w", padx=(0, 6))
+        ttk.Label(audio_sources, text="Speaker (PC audio)").grid(
+            row=0, column=3, sticky="w", padx=(0, 6)
+        )
         self.loopback_combo = ttk.Combobox(
-            toolbar, textvariable=self.loopback_var, state="readonly"
+            audio_sources, textvariable=self.loopback_var, state="readonly"
         )
         self.loopback_combo.grid(row=0, column=4, sticky="ew", padx=(0, 12))
+        self.loopback_combo.bind("<<ComboboxSelected>>", self._on_audio_device_changed)
         ttk.Checkbutton(
-            toolbar,
+            audio_sources,
             text="Mute",
             variable=self.mute_pc_var,
             command=self._on_audio_option_changed,
         ).grid(row=0, column=5, sticky="w", padx=(0, 12))
 
-        ttk.Label(toolbar, text="Model").grid(row=0, column=6, sticky="w", padx=(0, 6))
+        toolbar = ttk.Frame(self, padding=(12, 0, 12, 8))
+        toolbar.grid(row=1, column=0, sticky="ew")
+
+        ttk.Label(toolbar, text="Model").grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Combobox(
             toolbar,
             textvariable=self.model_var,
             values=MODEL_OPTIONS,
-            width=8,
+            width=20,
             state="readonly",
-        ).grid(row=0, column=7, sticky="w", padx=(0, 12))
+        ).grid(row=0, column=1, sticky="w", padx=(0, 12))
+
+        ttk.Label(toolbar, text="Compute").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            toolbar,
+            textvariable=self.device_var,
+            values=DEVICE_OPTIONS,
+            width=5,
+            state="readonly",
+        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
 
         self.refresh_button = ttk.Button(toolbar, text="Refresh", command=self.refresh_devices)
-        self.refresh_button.grid(row=0, column=8, padx=(0, 8))
+        self.refresh_button.grid(row=0, column=4, padx=(0, 8))
         self.start_button = ttk.Button(toolbar, text="Start", command=self.start_recording)
-        self.start_button.grid(row=0, column=9, padx=(0, 8))
+        self.start_button.grid(row=0, column=5, padx=(0, 8))
         self.stop_button = ttk.Button(
             toolbar, text="Stop", command=self.stop_recording, state="disabled"
         )
-        self.stop_button.grid(row=0, column=10)
+        self.stop_button.grid(row=0, column=6)
         self.import_button = ttk.Button(
             toolbar,
             text="Import Audio",
             command=self.import_audio,
         )
-        self.import_button.grid(row=0, column=11, padx=(8, 0))
+        self.import_button.grid(row=0, column=7, padx=(8, 0))
         self.summary_button = ttk.Button(
             toolbar,
             text="Summarize All",
             command=self.summarize_all,
             state="disabled",
         )
-        self.summary_button.grid(row=0, column=12, padx=(8, 0))
+        self.summary_button.grid(row=0, column=8, padx=(8, 0))
 
         filters = ttk.Frame(self, padding=(12, 0, 12, 8))
-        filters.grid(row=1, column=0, sticky="ew")
-        filters.columnconfigure(6, weight=1)
+        filters.grid(row=2, column=0, sticky="ew")
+        filters.columnconfigure(7, weight=1)
         ttk.Label(filters, text="Show").grid(row=0, column=0, sticky="w", padx=(0, 8))
         ttk.Checkbutton(
             filters,
@@ -166,23 +193,29 @@ class MinutesXApp(tk.Tk):
             variable=self.show_logs_var,
             command=self._on_filter_changed,
         ).grid(row=0, column=3, sticky="w")
-        ttk.Label(filters, text="Ollama").grid(row=0, column=4, sticky="w", padx=(24, 6))
+        ttk.Checkbutton(
+            filters,
+            text="Auto summarize",
+            variable=self.auto_summary_var,
+            command=self._save_settings,
+        ).grid(row=0, column=4, sticky="w", padx=(24, 0))
+        ttk.Label(filters, text="Ollama").grid(row=0, column=5, sticky="w", padx=(24, 6))
         self.ollama_combo = ttk.Combobox(
             filters,
             textvariable=self.ollama_model_var,
             values=self._ollama_model_values(),
         )
-        self.ollama_combo.grid(row=0, column=5, sticky="ew", padx=(0, 8))
+        self.ollama_combo.grid(row=0, column=6, sticky="ew", padx=(0, 8))
         self.ollama_combo.bind("<<ComboboxSelected>>", self._on_ollama_model_changed)
         self.ollama_combo.bind("<FocusOut>", self._on_ollama_model_changed)
         ttk.Button(
             filters,
             text="Models",
             command=self.refresh_ollama_models,
-        ).grid(row=0, column=6, sticky="w")
+        ).grid(row=0, column=7, sticky="w")
 
         meters = ttk.Frame(self, padding=(12, 0, 12, 8))
-        meters.grid(row=2, column=0, sticky="ew")
+        meters.grid(row=3, column=0, sticky="ew")
         meters.columnconfigure(1, weight=1)
         meters.columnconfigure(3, weight=1)
 
@@ -207,7 +240,7 @@ class MinutesXApp(tk.Tk):
         ).grid(row=0, column=3, sticky="ew")
 
         body = ttk.Frame(self, padding=(12, 0, 12, 12))
-        body.grid(row=3, column=0, sticky="nsew")
+        body.grid(row=4, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
 
@@ -218,7 +251,7 @@ class MinutesXApp(tk.Tk):
         self.text.configure(yscrollcommand=scrollbar.set)
 
         status = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(12, 6))
-        status.grid(row=4, column=0, sticky="ew")
+        status.grid(row=5, column=0, sticky="ew")
 
     def refresh_devices(self) -> None:
         try:
@@ -228,22 +261,35 @@ class MinutesXApp(tk.Tk):
             return
 
         self.devices = [device.id for device in devices]
-        self.mic_combo.configure(values=self.devices)
-        self.loopback_combo.configure(values=self.devices)
+        microphone_devices = [device.id for device in devices if not device.is_loopback]
+        speaker_devices = [device.id for device in devices if device.is_loopback]
+        self.mic_combo.configure(values=microphone_devices)
+        self.loopback_combo.configure(values=speaker_devices)
 
         mic = default_microphone_id()
         loopback = default_loopback_id()
         saved_mic = str(self.settings.get("mic_device") or "")
         saved_pc = str(self.settings.get("pc_device") or "")
-        if saved_mic in self.devices:
+        if saved_mic in microphone_devices:
             self.mic_var.set(saved_mic)
-        elif mic:
+        elif mic in microphone_devices:
             self.mic_var.set(mic)
-        if saved_pc in self.devices:
+        elif microphone_devices:
+            self.mic_var.set(microphone_devices[0])
+        else:
+            self.mic_var.set("")
+        if saved_pc in speaker_devices:
             self.loopback_var.set(saved_pc)
-        elif loopback:
+        elif loopback in speaker_devices:
             self.loopback_var.set(loopback)
-        self.status_var.set(f"Found {len(self.devices)} audio input devices")
+        elif speaker_devices:
+            self.loopback_var.set(speaker_devices[0])
+        else:
+            self.loopback_var.set("")
+        self.status_var.set(
+            f"Found {len(microphone_devices)} microphone(s) and "
+            f"{len(speaker_devices)} speaker loopback source(s)"
+        )
 
     def refresh_ollama_models(self) -> None:
         values = self._ollama_model_values()
@@ -315,6 +361,7 @@ class MinutesXApp(tk.Tk):
                 stop_event=self.stop_event,
                 on_status=self._set_status,
                 model_size=self.model_var.get(),
+                device=self._whisper_device(),
                 language="ja",
             )
         )
@@ -352,10 +399,13 @@ class MinutesXApp(tk.Tk):
         self.refresh_button.configure(state="normal")
         self.import_button.configure(state="normal")
         self._log("Stopping. Remaining audio will still be transcribed.")
-        self.status_var.set("停止中。残りの文字起こしが終わったら要約します。")
-        self._add_event("meta", "\n[要約待機中] 残りの文字起こしが終わったら要約します。\n")
-        self.final_summary_requested = True
-        self.after(1000, self._maybe_start_final_summary)
+        if self.auto_summary_var.get():
+            self.status_var.set("停止中。残りの文字起こしが終わったら要約します。")
+            self._add_event("meta", "\n[要約待機中] 残りの文字起こしが終わったら要約します。\n")
+            self.final_summary_requested = True
+            self.after(1000, self._maybe_start_final_summary)
+        else:
+            self.status_var.set("停止中。残りの文字起こしを処理します。")
         self._set_level("Mic", 0)
         self._set_level("PC", 0)
 
@@ -382,16 +432,17 @@ class MinutesXApp(tk.Tk):
         self.summary_button.configure(state="disabled")
         threading.Thread(
             target=self._run_import_audio,
-            args=(Path(file_name),),
+            args=(Path(file_name), self.model_var.get(), self._whisper_device()),
             daemon=True,
         ).start()
 
-    def _run_import_audio(self, path: Path) -> None:
+    def _run_import_audio(self, path: Path, model_size: str, device: str) -> None:
         try:
             self._set_status(f"Importing audio file: {path.name}")
             lines = transcribe_audio_file(
                 path,
-                model_size=self.model_var.get(),
+                model_size=model_size,
+                device=device,
                 language="ja",
                 source="File",
                 on_status=self._set_status,
@@ -406,8 +457,9 @@ class MinutesXApp(tk.Tk):
             self.after(0, self._finish_import_audio)
 
     def _summarize_imported_audio(self) -> None:
-        self.final_summary_requested = True
-        self._maybe_start_final_summary(force=True)
+        if self.auto_summary_var.get():
+            self.final_summary_requested = True
+            self._maybe_start_final_summary(force=True)
 
     def _finish_import_audio(self) -> None:
         self.start_button.configure(state="normal")
@@ -561,6 +613,9 @@ class MinutesXApp(tk.Tk):
         self._apply_level("Mic", self.mic_level_var.get())
         self._apply_level("PC", self.pc_level_var.get())
 
+    def _on_audio_device_changed(self, _event: object | None = None) -> None:
+        self._save_settings()
+
     def _on_filter_changed(self) -> None:
         self._save_settings()
         self._redraw_events()
@@ -568,13 +623,18 @@ class MinutesXApp(tk.Tk):
     def _on_ollama_model_changed(self, _event: object | None = None) -> None:
         self._save_settings()
 
+    def _whisper_device(self) -> str:
+        return "cuda" if self.device_var.get() == "GPU" else "cpu"
+
     def _save_settings(self) -> None:
-        save_settings(
+        self.settings.update(
             {
                 "show_logs": self.show_logs_var.get(),
                 "show_transcript": self.show_transcript_var.get(),
                 "show_summary": self.show_summary_var.get(),
+                "auto_summary": self.auto_summary_var.get(),
                 "whisper_model": self.model_var.get(),
+                "whisper_device": self._whisper_device(),
                 "ollama_model": self.ollama_model_var.get(),
                 "mic_device": self.mic_var.get(),
                 "pc_device": self.loopback_var.get(),
@@ -582,6 +642,7 @@ class MinutesXApp(tk.Tk):
                 "mute_pc": self.mute_pc_var.get(),
             }
         )
+        save_settings(self.settings)
 
     def _on_close(self) -> None:
         self._save_settings()
